@@ -177,6 +177,7 @@ describe('projects RPC profile forwarding', () => {
 describe('resolveNewSessionCwd', () => {
   beforeEach(() => {
     $projectScope.set(ALL_PROJECTS)
+    $activeProjectId.set(null)
     applyConfiguredDefaultProjectDir('/home/user/configured')
     $currentCwd.set('')
     $selectedStoredSessionId.set(null)
@@ -189,6 +190,7 @@ describe('resolveNewSessionCwd', () => {
   afterEach(() => {
     applyConfiguredDefaultProjectDir(null)
     $projectScope.set(ALL_PROJECTS)
+    $activeProjectId.set(null)
     $currentCwd.set('')
     $selectedStoredSessionId.set(null)
     $sessions.set([])
@@ -256,18 +258,53 @@ describe('resolveNewSessionCwd', () => {
     // not the stale $currentCwd from an earlier chat.
     expect(resolveNewSessionCwd()).toBe('/home/user/configured')
   })
+
+  it('anchors a fresh chat on the persisted active project (set from messaging/CLI)', () => {
+    $activeProjectId.set('p_active')
+    $projectTree.set([
+      treeNode({ id: 'p_active', label: 'mesax', path: '/repos/mesax' }),
+      treeNode({ id: 'p_other', label: 'other', path: '/repos/other' })
+    ])
+
+    expect(resolveNewSessionCwd()).toBe('/repos/mesax')
+  })
+
+  it('prefers the sidebar scope over the persisted active project', () => {
+    $activeProjectId.set('p_active')
+    $projectTree.set([
+      treeNode({ id: 'p_active', label: 'mesax', path: '/repos/mesax' }),
+      treeNode({ id: 'p_entered', label: 'entered', path: '/repos/entered' })
+    ])
+    enterProject('p_entered')
+
+    expect(resolveNewSessionCwd()).toBe('/repos/entered')
+  })
+
+  it('falls through to the configured default when the active project has no root', () => {
+    $activeProjectId.set('p_pathless')
+    $projectTree.set([treeNode({ id: 'p_pathless', label: 'pathless' })])
+
+    expect(resolveNewSessionCwd()).toBe('/home/user/configured')
+  })
+
+  it('ignores a stale active pointer whose project is not in the tree', () => {
+    $activeProjectId.set('p_vanished')
+    $projectTree.set([])
+
+    expect(resolveNewSessionCwd()).toBe('/home/user/configured')
+  })
+})
+
+const treeNode = (
+  over: Partial<SidebarProjectTree> & Pick<SidebarProjectTree, 'id' | 'label'>
+): SidebarProjectTree => ({
+  path: null,
+  repos: [],
+  sessionCount: 0,
+  ...over
 })
 
 describe('projectNameForCwd', () => {
-  const treeNode = (
-    over: Partial<SidebarProjectTree> & Pick<SidebarProjectTree, 'id' | 'label'>
-  ): SidebarProjectTree => ({
-    path: null,
-    repos: [],
-    sessionCount: 0,
-    ...over
-  })
-
   beforeEach(() => {
     $projectTree.set([])
   })

@@ -208,7 +208,11 @@ export function goToProject(id: string, options?: { newSession?: boolean }): voi
 //
 // Priority (first hit wins):
 //   1. Explicit sidebar project scope (drilled into a project / Home bucket)
-//   2. Configured default project dir / remote remembered cwd (detached otherwise)
+//   2. The persisted ACTIVE project (projects.db `active_id`, set by
+//      `hermes project use` / `/project use` in messaging or the sidebar
+//      overview) — so a chat started after activating a project from Telegram
+//      lands inside that project instead of Home (#active-project-anchor).
+//   3. Configured default project dir / remote remembered cwd (detached otherwise)
 //
 // The "active project" is just an atom ($projectScope) — so inside a project a
 // new session (cmd-n, the trunk "+") starts at that project's root (its primary
@@ -230,6 +234,21 @@ export function resolveNewSessionCwd(): string {
 
     if (cwd) {
       return cwd
+    }
+  }
+
+  // The persisted active project (from `projects.db` active_id — the same
+  // pointer the /project plugin and `hermes project use` write). Anchoring a
+  // fresh chat here closes the desktop↔messaging gap: activating a project
+  // from Telegram then opening the desktop no longer strands the new session
+  // in "Home".
+  const activeProjectId = $activeProjectId.get()
+
+  if (activeProjectId) {
+    const activeCwd = projectRootCwd($projectTree.get().find(node => node.id === activeProjectId))
+
+    if (activeCwd) {
+      return activeCwd
     }
   }
 
