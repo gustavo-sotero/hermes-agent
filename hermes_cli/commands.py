@@ -997,26 +997,32 @@ def _collect_gateway_skill_entries(
         from agent.skill_commands import get_skill_commands
         from tools.skills_tool import SKILLS_DIR
         from agent.skill_utils import get_external_skills_dirs, get_project_skills_dirs
-        _skills_dir = str(SKILLS_DIR.resolve())
-        _hub_dir = str((SKILLS_DIR / ".hub").resolve()).rstrip("/") + "/"
+        # Normalize every path to POSIX form (backslash → forward slash) so
+        # the prefix checks below work on every platform regardless of
+        # whether skill_md_path uses os.sep (Windows "\" vs POSIX "/").
+        _skills_dir = str(SKILLS_DIR.resolve()).replace("\\", "/")
+        _hub_dir = str((SKILLS_DIR / ".hub").resolve()).replace("\\", "/").rstrip("/") + "/"
         # Build set of allowed directory prefixes: local skills dir + any
         # user-configured ``skills.external_dirs`` + trusted project dirs.
-        # Ensure each prefix ends
-        # with ``/`` so ``/my-skills`` does not also match ``/my-skills-extra``.
+        # Ensure each prefix ends with ``/`` so ``/my-skills`` does not also
+        # match ``/my-skills-extra``.
         # Without this widening, external skills are visible in
         # ``hermes skills list`` and the agent's ``/skill-name`` dispatch but
-        # silently excluded from gateway slash menus (#8110).
-        _allowed_prefixes = [_skills_dir.rstrip("/") + "/"]
+        # silently excluded from gateway slash menus (#8110). A literal
+        # os.sep suffix is NOT used: on Windows os.sep is "\\" and would
+        # never match the "/"-normalized paths.
+        _sep = "/"
+        _allowed_prefixes = [_skills_dir.rstrip("/") + _sep]
         _allowed_prefixes.extend(
-            str(d).rstrip("/") + "/" for d in get_external_skills_dirs()
+            str(d).replace("\\", "/").rstrip("/") + _sep for d in get_external_skills_dirs()
         )
         _allowed_prefixes.extend(
-            str(d).rstrip("/") + "/" for d in get_project_skills_dirs()
+            str(d).replace("\\", "/").rstrip("/") + _sep for d in get_project_skills_dirs()
         )
         skill_cmds = get_skill_commands()
         for cmd_key in sorted(skill_cmds):
             info = skill_cmds[cmd_key]
-            skill_path = info.get("skill_md_path", "")
+            skill_path = str(info.get("skill_md_path", "")).replace("\\", "/")
             if not skill_path:
                 continue
             if not any(skill_path.startswith(prefix) for prefix in _allowed_prefixes):
@@ -1040,6 +1046,26 @@ def _collect_gateway_skill_entries(
     # Clamp names; cmd_key is passed through as extra payload so it survives
     # any clamp-induced renames.
     skill_triples = _clamp_command_names(skill_triples, reserved_names)
+
+    # Skills referenced by a skill bundle are pinned to the front of the
+    # skill tier (still alphabetical within each group). A bundle is the
+    # user's explicit signal "I want this skill as a slash command", so its
+    # members should survive the menu cap ahead of alphabetical peers.
+    try:
+        from agent.skill_bundles import get_skill_bundles
+        _bundle_member_ids = set()
+        for _binfo in get_skill_bundles().values():
+            for _sid in (_binfo.get("skills") or []):
+                _bundle_member_ids.add(str(_sid).strip().lstrip("/").lower())
+    except Exception:
+        _bundle_member_ids = set()
+
+    def _bundle_rank(triple: tuple[str, str, str]) -> tuple[int, str]:
+        key = triple[2].lstrip("/").lower()
+        rank = 0 if (key in _bundle_member_ids or triple[0].lower() in _bundle_member_ids) else 1
+        return (rank, triple[0])
+
+    skill_triples = sorted(skill_triples, key=_bundle_rank)
 
     # Skills fill remaining slots — only tier that gets trimmed
     remaining = max(0, max_slots - len(all_entries))
