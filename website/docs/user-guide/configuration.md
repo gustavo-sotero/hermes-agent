@@ -2563,6 +2563,21 @@ terminal:
 
 `MESSAGING_CWD` and direct `TERMINAL_CWD` entries in `~/.hermes/.env` are legacy compatibility fallbacks. New configurations should use `terminal.cwd`.
 
+Messaging sessions (Telegram, WhatsApp, …) persist a working directory on
+their session rows so the desktop sidebar can group them under a project
+instead of the "Home" bucket. The gateway resolves it, most specific first:
+
+1. the session's recorded workspace (set by surfaces/plugins that anchor a
+   conversation to a folder, e.g. the `project-switcher` plugin's
+   `/project use`);
+2. the active project's primary path (from `projects.db`);
+3. the resolved `terminal.cwd` from above — only when it is a real directory
+   that is not the home dir or the Hermes state tree (stamping those would
+   put sessions straight back into "Home").
+
+Sessions created before this behavior can be moved into the project tree with
+`hermes sessions backfill` (defaults to the active project's path).
+
 ## Network
 
 Connectivity workarounds for outbound HTTP:

@@ -1538,6 +1538,7 @@ Subcommands:
 | `repair` | Repair a malformed `state.db` schema (e.g. `table messages_fts already exists`) so hidden sessions reappear; a backup is made first. |
 | `repair-routing` | Re-attach gateway conversations stranded in session rows that lost their routing identity (a chat "jumping back in time" after a restart). Dry-run by default; `--apply` performs the adoptions (stop the gateway first); `--max-gap-seconds N` tunes the contiguity window. Only unambiguous cases are repaired. See [Sessions → Repair Stranded Gateway Sessions](../user-guide/sessions.md#repair-stranded-gateway-sessions). |
 | `recover` | Offline, non-destructive recovery of a damaged `state.db` into a separate clean database. |
+| `backfill` | Stamp a working directory onto sessions that have no workspace (`cwd IS NULL` and no git repo root) — the rows the sidebar buckets under "Home". Defaults to the active project's primary path; `--cwd PATH` overrides. NULL-only (rows with a cwd are never touched) and idempotent. `--dry-run` lists the affected sessions without writing; a timestamped backup is taken before writing unless `--no-backup` is passed. Stop the gateway first — a running gateway may rewrite session rows from memory. |
 | `retitle-skills` | Regenerate titles for sessions opened with a `/skill`, using what the user actually typed; lists changes unless `--apply` is passed. |
 
 ## `hermes insights`
