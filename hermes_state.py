@@ -5341,6 +5341,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         thread_id: str = None,
         display_name: str = None,
         origin_json: str = None,
+        cwd: str = None,
         include_compression_ancestors: bool = False,
     ) -> None:
         """Persist the gateway routing peer for an existing session row.
@@ -5350,6 +5351,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         channel directory) can read routing data from state.db instead of
         sessions.json.  They are COALESCE'd only in the sense that ``None``
         leaves the existing value untouched.
+
+        ``cwd`` — when supplied and the row still has no cwd — stamps the
+        session's working directory (COALESCE, so an explicit cwd already set
+        on the row is never overwritten). Messaging rows created before the
+        gateway resolved a cwd are healed here, which is what moves them out
+        of the sidebar's "Home" bucket and under their project.
 
         ``include_compression_ancestors`` keeps a logical compression lineage
         on one routing peer when an explicit gateway resume moves its tip to a
@@ -5395,6 +5402,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 """
                 target_clause = "WHERE id IN (SELECT id FROM compression_lineage)"
                 query_params.append(session_id)
+            cwd_value = (cwd or "").strip() or None
             query_params.extend(
                 (
                     session_key,
@@ -5407,6 +5415,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     origin_json,
                 )
             )
+            if cwd_value:
+                query_params.append(cwd_value)
             if not include_compression_ancestors:
                 query_params.append(session_id)
             conn.execute(
@@ -5416,6 +5426,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                        chat_type = ?, thread_id = ?,
                        display_name = COALESCE(?, display_name),
                        origin_json = COALESCE(?, origin_json)
+                       {', cwd = COALESCE(cwd, ?)' if cwd_value else ''}
                    {target_clause}""",
                 query_params,
             )
@@ -5429,20 +5440,24 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     "SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)
                 )
                 if cur.fetchone() is None:
+                    cwd_cols = ", cwd" if cwd_value else ""
+                    cwd_vals = ", ?" if cwd_value else ""
                     conn.execute(
-                        """INSERT INTO sessions (
-                               id, source, user_id, session_key, chat_id,
-                               chat_type, thread_id, display_name, origin_json,
-                               started_at
-                           )
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                           ON CONFLICT(id) DO UPDATE SET
-                               session_key = COALESCE(sessions.session_key, excluded.session_key),
-                               chat_id = COALESCE(sessions.chat_id, excluded.chat_id),
-                               chat_type = COALESCE(sessions.chat_type, excluded.chat_type),
-                               thread_id = COALESCE(sessions.thread_id, excluded.thread_id),
-                               display_name = COALESCE(sessions.display_name, excluded.display_name),
-                               origin_json = COALESCE(sessions.origin_json, excluded.origin_json)""",
+                        f"""INSERT INTO sessions (
+                              id, source, user_id, session_key, chat_id,
+                              chat_type, thread_id, display_name, origin_json
+                              {cwd_cols}, started_at
+                          )
+                          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?
+                                  {cwd_vals}, ?)
+                          ON CONFLICT(id) DO UPDATE SET
+                              session_key = COALESCE(sessions.session_key, excluded.session_key),
+                              chat_id = COALESCE(sessions.chat_id, excluded.chat_id),
+                              chat_type = COALESCE(sessions.chat_type, excluded.chat_type),
+                              thread_id = COALESCE(sessions.thread_id, excluded.thread_id),
+                              display_name = COALESCE(sessions.display_name, excluded.display_name),
+                              origin_json = COALESCE(sessions.origin_json, excluded.origin_json)
+                              {', cwd = COALESCE(sessions.cwd, excluded.cwd)' if cwd_value else ''}""",
                         (
                             session_id,
                             source,
@@ -5453,6 +5468,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                             thread_id,
                             display_name,
                             origin_json,
+                            *((cwd_value,) if cwd_value else ()),
                             time.time(),
                         ),
                     )
@@ -6643,6 +6659,50 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 )
 
         self._execute_write(_do)
+
+    def list_unbound_sessions(self) -> List[Dict[str, Any]]:
+        """Sessions with no workspace signal at all (cwd and git root NULL).
+
+        These are the rows the sidebar buckets under "Home"
+        (``__no_project__``): messaging rows created before the gateway
+        resolved a cwd, and sessions that genuinely never had a workspace.
+        The CLI ``sessions backfill`` command feeds on this list.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, source, started_at, "
+                "COALESCE(NULLIF(TRIM(title), ''), '') AS title, "
+                "(SELECT COUNT(*) FROM messages m "
+                "  WHERE m.session_id = s.id) AS message_count "
+                "FROM sessions s "
+                "WHERE cwd IS NULL AND COALESCE(git_repo_root, '') = '' "
+                "AND COALESCE(source, '') != 'tool' "
+                "ORDER BY started_at DESC"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def backfill_session_cwd(self, cwd: str, session_ids: List[str]) -> int:
+        """Stamp *cwd* onto rows that still have no cwd of their own.
+
+        NULL-only write (COALESCE semantics): an explicit cwd already set on a
+        row is never overwritten. Returns the number of rows actually updated.
+        """
+        if not cwd or not session_ids:
+            return 0
+        ids = [sid for sid in session_ids if sid]
+        if not ids:
+            return 0
+        placeholders = ",".join("?" * len(ids))
+
+        def _do(conn):
+            cursor = conn.execute(
+                f"UPDATE sessions SET cwd = ? "
+                f"WHERE id IN ({placeholders}) AND cwd IS NULL",
+                (cwd, *ids),
+            )
+            return cursor.rowcount
+
+        return int(self._execute_write(_do))
 
     def record_compression_failure_cooldown(
         self,

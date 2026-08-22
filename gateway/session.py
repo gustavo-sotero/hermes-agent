@@ -18,7 +18,7 @@ import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field, replace
-from typing import Dict, List, Optional, Any
+from typing import Callable, Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
 
@@ -1254,6 +1254,12 @@ class SessionStore:
                  has_active_processes_fn=None):
         self.sessions_dir = sessions_dir
         self.config = config
+        # Optional resolver of the session's working directory, injected by the
+        # gateway host (gateway/run.py). Called with (session_key, source) on
+        # row creation and peer refresh so messaging sessions persist a cwd
+        # (and thus land under a project in the sidebar instead of "Home").
+        # Returning None leaves the current behavior (row stays NULL).
+        self.cwd_resolver: Optional[Callable[[str, Optional[SessionSource]], Optional[str]]] = None
         self._entries: Dict[str, SessionEntry] = {}
         self._loaded = False
         self._lock = threading.Lock()
@@ -2227,6 +2233,34 @@ class SessionStore:
                 display_name=entry.display_name,
             )
         return entry
+    def _resolve_session_cwd(
+        self,
+        session_key: Optional[str],
+        source: Optional[SessionSource],
+    ) -> Optional[str]:
+        """The session's working directory for its DB row, or None.
+
+        Delegates to the injected ``cwd_resolver`` (composed by the gateway
+        host: per-session record → active project → resolved terminal cwd).
+        Returns ``None`` when no resolver is wired or the resolved path does
+        not exist locally — callers keep today's behavior (row stays NULL,
+        session buckets under "Home") instead of stamping a junk path.
+        """
+        resolver = getattr(self, "cwd_resolver", None)
+        if not callable(resolver):
+            return None
+        try:
+            resolved = resolver(session_key, source)
+        except Exception as exc:
+            logger.debug("Session cwd resolver failed for %s: %s", session_key, exc)
+            return None
+        if not resolved or not isinstance(resolved, str):
+            return None
+        try:
+            return resolved if os.path.isdir(os.path.abspath(os.path.expanduser(resolved))) else None
+        except Exception:
+            return None
+
     def _record_gateway_session_peer(
         self,
         session_id: str,
@@ -2257,6 +2291,7 @@ class SessionStore:
                 thread_id=source.thread_id,
                 display_name=display_name or source.chat_name,
                 origin_json=origin_json,
+                cwd=self._resolve_session_cwd(session_key, source),
                 include_compression_ancestors=include_compression_ancestors,
             )
         except TypeError:
@@ -2870,6 +2905,7 @@ class SessionStore:
                     "chat_type": source.chat_type,
                     "thread_id": source.thread_id,
                     "profile_name": source.profile,
+                    "cwd": self._resolve_session_cwd(session_key, source),
                     # Identity lands atomically in the INSERT (#82616): a
                     # crash after this write can no longer strand the row
                     # unroutable, and lineage survives resets (#12857).

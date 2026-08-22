@@ -6857,6 +6857,46 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             set_multiplex_active(bool(getattr(self.config, "multiplex_profiles", False)))
         except Exception:
             logger.debug("could not set multiplex-active flag", exc_info=True)
+        # Per-session working-directory resolver: messaging sessions persist a
+        # cwd (active project / recorded workspace / resolved terminal cwd) so
+        # their rows land under a project in the sidebar instead of "Home".
+        # Best-effort — failures leave the previous NULL-cwd behavior.
+        try:
+            from gateway.cwd_resolver import build_gateway_cwd_resolver
+
+            def _active_project_path() -> Optional[str]:
+                from hermes_cli import projects_db
+
+                try:
+                    with projects_db.connect_closing() as conn:
+                        active_id = projects_db.get_active_id(conn)
+                        if not active_id:
+                            return None
+                        project = projects_db.get_project(conn, active_id)
+                        if not project or project.archived:
+                            return None
+                        return project.primary_path
+                except Exception:
+                    return None
+
+            def _session_cwd_record(key: Optional[str]) -> Optional[str]:
+                try:
+                    from tools.terminal_tool import get_session_cwd
+
+                    return get_session_cwd(key)
+                except Exception:
+                    return None
+
+            self._gateway_cwd_resolver = build_gateway_cwd_resolver(
+                terminal_cwd=os.environ.get("TERMINAL_CWD", ""),
+                hermes_home=str(get_hermes_home()),
+                projects_db_path=str(get_hermes_home() / "projects.db"),
+                get_session_cwd=_session_cwd_record,
+                get_active_project_path=_active_project_path,
+            )
+        except Exception as exc:
+            logger.debug("gateway cwd resolver unavailable: %s", exc)
+            self._gateway_cwd_resolver = None
         self.adapters: Dict[Platform, BasePlatformAdapter] = {}
         # When non-None, SessionDB init failed — the gateway broadcasts a
         # one-time warning to the home channel(s) after connecting, so the
@@ -6909,6 +6949,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             has_active_processes_fn=lambda key: process_registry.has_active_for_session(
                 key, max_active_age=_bg_max_age_seconds,
             ),
+        )
+        # Messaging sessions resolve their working directory at row creation /
+        # peer refresh so their state.db rows carry a cwd and the sidebar
+        # places them under a project instead of the "Home" bucket.
+        self.session_store.cwd_resolver = getattr(
+            self, "_gateway_cwd_resolver", None
         )
         # One enforced loop-side boundary for the synchronous SessionStore.
         # Sync helpers keep using ``session_store`` directly; async gateway
