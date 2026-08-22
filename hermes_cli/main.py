@@ -13772,6 +13772,38 @@ def main():
         "--limit", type=int, default=500, help="Max sessions to load (default: 500)"
     )
 
+    sessions_backfill = sessions_subparsers.add_parser(
+        "backfill",
+        help="Stamp a cwd onto sessions that have no workspace (Home bucket)",
+        description=(
+            "Sessions created by the messaging gateway historically persisted "
+            "no cwd, so the sidebar buckets them under 'Home' instead of a "
+            "project. This stamps a working directory onto exactly those rows "
+            "(cwd IS NULL AND git_repo_root IS NULL), moving them into the "
+            "project tree. NULL-only: rows that already carry a cwd are never "
+            "touched, and re-running is idempotent. Defaults to the active "
+            "project's primary path; pass --cwd to choose another directory."
+        ),
+    )
+    sessions_backfill.add_argument(
+        "--cwd",
+        metavar="PATH",
+        help="Working directory to stamp (default: the active project's "
+        "primary path from projects.db)",
+    )
+    sessions_backfill.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="List the affected sessions without writing anything",
+    )
+    sessions_backfill.add_argument(
+        "--no-backup",
+        action="store_true",
+        default=False,
+        help="Skip the timestamped state.db backup taken before writing (not recommended)",
+    )
+
     sessions_import = sessions_subparsers.add_parser(
         "import",
         help="Import a Claude Code or Codex CLI session into Hermes",

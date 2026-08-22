@@ -1289,6 +1289,87 @@ def cmd_sessions(args, sessions_parser=None):
                 print(f"  backup: {report['backup_path']}")
             print(f"✓ Cleared {report['rows_affected']} row(s).")
 
+    elif action == "backfill":
+        from hermes_cli import projects_db
+
+        unbound = db.list_unbound_sessions()
+        if not unbound:
+            print("✓ No sessions are missing a workspace — nothing to backfill.")
+            return
+
+        target = getattr(args, "cwd", None)
+        if target:
+            target = str(target).strip()
+        else:
+            try:
+                with projects_db.connect_closing() as conn:
+                    active_id = projects_db.get_active_id(conn)
+                    if not active_id:
+                        print(
+                            "Error: no active project set and no --cwd given. "
+                            "Set an active project (hermes project use <name>) "
+                            "or pass --cwd PATH."
+                        )
+                        return 2
+                    project = projects_db.get_project(conn, active_id)
+                    target = (project.primary_path or "") if project else ""
+                    if not target:
+                        print(
+                            f"Error: active project {active_id!r} has no "
+                            "primary path. Pass --cwd PATH explicitly."
+                        )
+                        return 2
+            except Exception as exc:
+                print(f"Error: could not read projects.db: {exc}")
+                return 1
+
+        target = os.path.abspath(os.path.expanduser(target))
+        if not os.path.isdir(target):
+            print(f"Error: --cwd path does not exist or is not a directory: {target}")
+            return 2
+
+        print(f"Target workspace: {target}")
+        print(f"{len(unbound)} session(s) have no workspace:")
+        for record in unbound:
+            title = (record.get("title") or "").strip()
+            label = f"  {record['id']}  ({record['source']}, "
+            label += f"{record['message_count']} messages)"
+            if title:
+                label += f" — {title[:60]}"
+            print(label)
+
+        if args.dry_run:
+            print(f"\n--dry-run: would stamp {target} onto "
+                  f"{len(unbound)} row(s). Nothing written.")
+            return
+
+        print("\nStop the gateway before applying — a running gateway may "
+              "rewrite session rows from memory.")
+        if not _confirm_prompt(
+            f"Stamp {target} onto {len(unbound)} session(s)? [y/N] "
+        ):
+            print("Aborted — nothing was changed.")
+            return
+
+        import datetime
+
+        stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        dest = db.db_path.with_name(
+            f"{db.db_path.name}.pre-backfill-cwd-backup-{stamp}"
+        )
+        try:
+            with db._lock:
+                db._conn.execute("VACUUM INTO ?", (str(dest),))
+            print(f"  backup: {dest}")
+        except Exception as exc:
+            print(f"  ⚠ backup failed ({exc}) — continuing without it")
+
+        ids = [r["id"] for r in unbound]
+        updated = db.backfill_session_cwd(target, ids)
+        print(f"✓ Stamped cwd onto {updated} session(s).")
+        print("The sidebar will now group these sessions under the project "
+              "tree; restart the desktop/gateway to refresh the tree.")
+
     elif action == "optimize-storage":
         db_path = db.db_path
         if not db.fts_optimize_available():
