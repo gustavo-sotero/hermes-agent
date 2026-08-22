@@ -1298,25 +1298,41 @@ def cmd_sessions(args, sessions_parser=None):
             return
 
         target = getattr(args, "cwd", None)
+        project_ref = getattr(args, "project", None)
+        if target and project_ref:
+            print(
+                "Error: pass either --cwd PATH or --project ID_OR_SLUG, not both."
+            )
+            return 2
         if target:
             target = str(target).strip()
         else:
             try:
                 with projects_db.connect_closing() as conn:
-                    active_id = projects_db.get_active_id(conn)
-                    if not active_id:
-                        print(
-                            "Error: no active project set and no --cwd given. "
-                            "Set an active project (hermes project use <name>) "
-                            "or pass --cwd PATH."
-                        )
-                        return 2
-                    project = projects_db.get_project(conn, active_id)
+                    if project_ref:
+                        project = projects_db.get_project(conn, str(project_ref))
+                        if not project:
+                            print(
+                                f"Error: no project matches {project_ref!r} "
+                                "(by id or slug)."
+                            )
+                            return 2
+                    else:
+                        active_id = projects_db.get_active_id(conn)
+                        if not active_id:
+                            print(
+                                "Error: no active project set and no --cwd / "
+                                "--project given. Set an active project "
+                                "(hermes project use <name>) or pass "
+                                "--cwd PATH / --project ID_OR_SLUG."
+                            )
+                            return 2
+                        project = projects_db.get_project(conn, active_id)
                     target = (project.primary_path or "") if project else ""
                     if not target:
                         print(
-                            f"Error: active project {active_id!r} has no "
-                            "primary path. Pass --cwd PATH explicitly."
+                            f"Error: project {project.id!r} has no primary "
+                            "path. Pass --cwd PATH explicitly."
                         )
                         return 2
             except Exception as exc:

@@ -13782,7 +13782,8 @@ def main():
             "(cwd IS NULL AND git_repo_root IS NULL), moving them into the "
             "project tree. NULL-only: rows that already carry a cwd are never "
             "touched, and re-running is idempotent. Defaults to the active "
-            "project's primary path; pass --cwd to choose another directory."
+            "project's primary path; pass --cwd to choose another directory "
+            "or --project to use a specific project's primary path."
         ),
     )
     sessions_backfill.add_argument(
@@ -13790,6 +13791,12 @@ def main():
         metavar="PATH",
         help="Working directory to stamp (default: the active project's "
         "primary path from projects.db)",
+    )
+    sessions_backfill.add_argument(
+        "--project",
+        metavar="ID_OR_SLUG",
+        help="Stamp the primary path of this project (id or slug) instead of "
+        "the active project",
     )
     sessions_backfill.add_argument(
         "--dry-run",
