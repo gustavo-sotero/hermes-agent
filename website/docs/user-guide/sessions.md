@@ -188,6 +188,15 @@ hermes sessions list --workspace my-project
 hermes sessions list --workspace ~/code/hermes-agent
 ```
 
+### Messaging sessions and the active project
+
+Messaging sessions (Telegram, WhatsApp, Discord, …) resolve their working
+directory at each turn from, in order: the session's recorded workspace (set
+by `/project use`), the active project's primary path (`hermes project use`),
+or `terminal.cwd` from `config.yaml`. This means a messaging conversation runs
+its terminal and file tools inside the project that is active when the turn
+starts — not in the directory the gateway process was launched from.
+
 ### Conversation Recap on Resume
 
 When you resume a session, Hermes displays a compact recap of the previous conversation in a styled panel before the input prompt:
