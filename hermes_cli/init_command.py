@@ -26,6 +26,73 @@ history mutation).
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
+# Harness instruction collection: /init also absorbs instruction docs written
+# for OTHER coding agents (GitHub Copilot's `.github/instructions/`, Claude
+# Code's `CLAUDE.md`, Cursor's `.cursorrules` / `.cursor/rules/*.mdc`). Hermes
+# only auto-loads AGENTS.md every session, so rules living in those files would
+# otherwise be invisible to it; /init embeds them into the AGENTS.md it writes.
+_HARNESS_FILE_MAX_CHARS = 60_000  # per-file cap (a vendored doc can be huge)
+_HARNESS_TOTAL_MAX_CHARS = 200_000  # total cap across all collected files
+
+
+def _collect_harness_instructions(cwd: Path) -> list[tuple[str, str]]:
+    """Collect instruction docs from other agent harnesses.
+
+    Returns ``(rel_path, content)`` tuples sorted by path, with per-file and
+    total caps so a giant vendored doc cannot balloon the /init prompt.
+    """
+    candidates: list[tuple[str, Path]] = []
+
+    def _rel(p: Path) -> str:
+        # Normalize to POSIX separators so labels are stable across OSes.
+        return str(p.relative_to(cwd)).replace("\\", "/")
+
+    # GitHub Copilot: .github/instructions/*.md
+    gh_dir = cwd / ".github" / "instructions"
+    if gh_dir.is_dir():
+        for p in sorted(gh_dir.iterdir()):
+            if p.is_file() and p.suffix.lower() in {".md", ".markdown"}:
+                candidates.append((_rel(p), p))
+
+    # Claude Code
+    for name in ("CLAUDE.md", "claude.md"):
+        p = cwd / name
+        if p.is_file():
+            candidates.append((name, p))
+
+    # Cursor
+    cr = cwd / ".cursorrules"
+    if cr.is_file():
+        candidates.append((".cursorrules", cr))
+    cursor_rules = cwd / ".cursor" / "rules"
+    if cursor_rules.is_dir():
+        for p in sorted(cursor_rules.glob("*.mdc")):
+            candidates.append((_rel(p), p))
+
+    result: list[tuple[str, str]] = []
+    total = 0
+    for rel, path in candidates:
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            continue
+        if not content:
+            continue
+        if len(content) > _HARNESS_FILE_MAX_CHARS:
+            content = (
+                content[:_HARNESS_FILE_MAX_CHARS]
+                + "\n\n[truncated: file exceeds the per-file collection cap]"
+            )
+        if total + len(content) > _HARNESS_TOTAL_MAX_CHARS:
+            continue
+        result.append((rel, content))
+        total += len(content)
+    return result
+
+
 # The quality bar, embedded in every prompt so the generated file reads like a
 # maintainer wrote it — concrete and command-exact, not generic advice.
 _QUALITY_BAR = """\
@@ -54,6 +121,7 @@ def build_init_prompt(
     cwd: str,
     existing_file: str | None = None,
     extra: str = "",
+    harness_instructions: list[tuple[str, str]] | None = None,
 ) -> str:
     """Build the agent prompt for a ``/init`` request.
 
@@ -65,6 +133,11 @@ def build_init_prompt(
             update-and-merge discipline instead of fresh generation.
         extra: free-text the user gave after ``/init`` — emphasis or notes to
             honor while authoring (e.g. "focus on the test setup").
+        harness_instructions: ``(rel_path, content)`` pairs collected from
+            other harnesses (`.github/instructions/`, `CLAUDE.md`,
+            `.cursorrules`). When present, the prompt instructs the agent to
+            fold them into the AGENTS.md it writes so rules that only live in
+            Copilot/Claude/Cursor files stay active under Hermes.
 
     Returns:
         A complete instruction the agent runs as a normal turn.
@@ -121,6 +194,25 @@ def build_init_prompt(
 
     parts.append(_QUALITY_BAR)
 
+    if harness_instructions:
+        parts.append(
+            "EXTERNAL HARNESS INSTRUCTIONS — this repo carries instruction "
+            "docs written for OTHER coding agents (GitHub Copilot's "
+            "`.github/instructions/`, Claude Code's `CLAUDE.md`, Cursor's "
+            "`.cursorrules`). Hermes auto-loads only AGENTS.md every session, "
+            "so those rules are invisible to it unless you fold them in. "
+            "EMBED the content below into the AGENTS.md you write — preserving "
+            "the rules and intent verbatim (adapt headers to AGENTS.md "
+            "section structure, drop only YAML frontmatter), so the file is "
+            "self-contained. Content that duplicates what the existing "
+            "AGENTS.md already covers may be consolidated, but never dropped. "
+            "Do not edit these files in place.\n\n"
+            + "\n\n".join(
+                f"===== FILE: {rel} =====\n{content}"
+                for rel, content in harness_instructions
+            )
+        )
+
     if extra:
         parts.append(
             "\nUSER NOTES — honor these while authoring (they override the "
@@ -134,10 +226,9 @@ def build_init_prompt_for_cwd(cwd: str | None = None, extra: str = "") -> str:
     """Convenience wrapper used by the dispatch surfaces.
 
     Resolves ``cwd`` (defaults to the process working directory), reads an
-    existing ``AGENTS.md`` there if present, and returns the full prompt.
+    existing ``AGENTS.md`` there if present, collects instruction docs from
+    other agent harnesses in the same directory, and returns the full prompt.
     """
-    import os
-
     resolved = os.path.abspath(cwd or os.getcwd())
     existing: str | None = None
     agents_path = os.path.join(resolved, "AGENTS.md")
@@ -147,4 +238,10 @@ def build_init_prompt_for_cwd(cwd: str | None = None, extra: str = "") -> str:
                 existing = fh.read()
     except OSError:
         existing = None
-    return build_init_prompt(resolved, existing_file=existing, extra=extra)
+    collected = _collect_harness_instructions(Path(resolved))
+    return build_init_prompt(
+        resolved,
+        existing_file=existing,
+        extra=extra,
+        harness_instructions=collected,
+    )
