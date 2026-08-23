@@ -24686,6 +24686,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _adapters = getattr(self, "adapters", None) or {}
         _adapter = _adapters.get(context.source.platform)
         _async_delivery = getattr(_adapter, "supports_async_delivery", True)
+        # Pin the session's runtime working directory (recorded workspace /
+        # active project / non-junk TERMINAL_CWD). The resolver is the same
+        # one used to stamp sessions.cwd for sidebar attribution; here it
+        # also drives where terminal/file tools and the prompt's "Current
+        # working directory" resolve, so a messaging session actually works
+        # inside its project instead of the bare home / install tree.
+        _resolved_cwd = ""
+        try:
+            from gateway.runtime_cwd_bridge import resolve_session_runtime_cwd
+            from tools.terminal_tool import record_session_cwd
+
+            _resolved_cwd = (
+                resolve_session_runtime_cwd(
+                    getattr(self, "_gateway_cwd_resolver", None),
+                    context.session_key,
+                )
+                or ""
+            )
+            if _resolved_cwd:
+                # Terminal/file tools resolve relative paths through the
+                # per-session record (terminal_tool._resolve_command_cwd,
+                # file_tools._authoritative_workspace_root) — the contextvar
+                # alone only fixes the prompt. Both must agree.
+                record_session_cwd(context.session_key, _resolved_cwd)
+        except Exception as exc:  # pragma: no cover - defensive, fail-open
+            logger.debug("session runtime cwd wiring failed (non-fatal): %s", exc)
         return set_session_vars(
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,
@@ -24703,6 +24729,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             profile=getattr(context.source, "profile", "") or "",
             async_delivery=_async_delivery,
             cron_session="",
+            cwd=_resolved_cwd,
         )
 
     def _clear_session_env(self, tokens: list) -> None:
