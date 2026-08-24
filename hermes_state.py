@@ -6528,6 +6528,43 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         return self._execute_write(_do)
 
+    def clear_session_cwd(self, session_id: str) -> Optional[int]:
+        """Detach a session from its workspace (cwd → NULL, Home bucket).
+
+        Inverse of :meth:`update_session_cwd`: used when a session is moved
+        to "Home" (no project owns it). Clears ``cwd`` plus the git identity
+        columns and bumps ``git_metadata_generation`` in the same write, so
+        an async git probe still in flight cannot re-stamp a stale claim for
+        the old workspace (same generation contract as the move path).
+        """
+        if not session_id:
+            return None
+
+        def _do(conn):
+            current = conn.execute(
+                "SELECT cwd FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if current is None:
+                return None
+            conn.execute(
+                "UPDATE sessions SET cwd = NULL, git_branch = NULL, "
+                "git_repo_root = NULL, "
+                "git_metadata_generation = "
+                "COALESCE(git_metadata_generation, 0) + 1 "
+                "WHERE id = ?",
+                (session_id,),
+            )
+            row = conn.execute(
+                "SELECT git_metadata_generation FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            value = row["git_metadata_generation"] if isinstance(row, sqlite3.Row) else row[0]
+            return int(value)
+
+        return self._execute_write(_do)
+
     def publish_session_git_metadata(
         self,
         session_id: str,

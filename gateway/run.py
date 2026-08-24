@@ -17710,11 +17710,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # so role alternation is preserved). The live agent scans the
             # project with its own read-only tools and writes/updates
             # AGENTS.md via write_file. No engine, works on any backend.
+            #
+            # The target directory is the SESSION's working directory, not the
+            # gateway process cwd (which is HERMES_HOME on desktop installs and
+            # would make /init generate AGENTS.md into the install/state tree).
+            # Resolve through the same per-session resolver used for terminal
+            # tools and sidebar attribution; fall back to the process cwd only
+            # when no resolver is wired (CLI parity).
             from hermes_cli.init_command import build_init_prompt_for_cwd
 
             _init_notes = event.get_command_args().strip()
+            _init_cwd = None
             try:
-                _init_prompt = build_init_prompt_for_cwd(extra=_init_notes)
+                from gateway.runtime_cwd_bridge import resolve_session_runtime_cwd
+
+                _init_cwd = resolve_session_runtime_cwd(
+                    getattr(self, "_gateway_cwd_resolver", None),
+                    _quick_key,
+                )
+            except Exception:
+                logger.debug("init cwd resolution failed", exc_info=True)
+            try:
+                _init_prompt = build_init_prompt_for_cwd(
+                    cwd=_init_cwd,
+                    extra=_init_notes,
+                )
             except Exception:
                 return "Could not start /init — please try again."
             _ack = (

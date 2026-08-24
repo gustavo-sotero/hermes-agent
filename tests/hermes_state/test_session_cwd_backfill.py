@@ -58,3 +58,44 @@ class TestBackfillSessionCwd:
         _insert(db, "s1", cwd=None)
         assert db.backfill_session_cwd("", ["s1"]) == 0
         assert db.backfill_session_cwd("/x", []) == 0
+
+
+class TestClearSessionCwd:
+    def test_detaches_row_to_home(self, tmp_path):
+        db = _mkdb(tmp_path)
+        _insert(db, "s1", cwd="/project/a", git_repo_root="/project")
+        db.update_session_cwd(
+            "s1", "/project/a", "main", "/project", replace_git_meta=True
+        )
+        generation = db.clear_session_cwd("s1")
+        row = db._conn.execute(
+            "SELECT cwd, git_branch, git_repo_root, git_metadata_generation "
+            "FROM sessions WHERE id = ?",
+            ("s1",),
+        ).fetchone()
+        assert row["cwd"] is None
+        assert row["git_branch"] is None
+        assert row["git_repo_root"] is None
+        assert row["git_metadata_generation"] == generation
+        assert generation is not None and generation >= 1
+
+    def test_unknown_session_returns_none(self, tmp_path):
+        db = _mkdb(tmp_path)
+        assert db.clear_session_cwd("missing") is None
+
+    def test_noop_without_id(self, tmp_path):
+        db = _mkdb(tmp_path)
+        assert db.clear_session_cwd("") is None
+
+    def test_idempotent(self, tmp_path):
+        db = _mkdb(tmp_path)
+        _insert(db, "s1", cwd="/project")
+        first = db.clear_session_cwd("s1")
+        second = db.clear_session_cwd("s1")
+        row = db._conn.execute(
+            "SELECT cwd FROM sessions WHERE id = ?", ("s1",)
+        ).fetchone()
+        assert row["cwd"] is None
+        # Second clear still bumps the generation (a move claim that must win).
+        assert first is not None and second is not None
+        assert second > first
