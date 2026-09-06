@@ -1,28 +1,4 @@
-#!/usr/bin/env python3
-"""``/init`` — build the prompt that generates or updates a project AGENTS.md.
-
-Port of Codex ``/init`` (Claude Code has the same for CLAUDE.md). Hermes
-already *loads* AGENTS.md / CLAUDE.md / .cursorrules as project context, but
-had no command to bootstrap one. ``/init`` hands the live agent ONE
-guidance-laden prompt instructing it to:
-
-  1. Inspect the project with its own read-only tools (``read_file`` /
-     ``search_files`` on manifests, CI configs, lockfiles, existing docs) to
-     learn the layout, toolchain, and the exact build/test/lint commands.
-  2. Write a CONCISE ``AGENTS.md`` (target under 100 lines) with the sections
-     an agent actually needs — overview, setup, commands, conventions,
-     pitfalls — not an essay.
-  3. If an AGENTS.md already exists, UPDATE it: preserve the user's existing
-     content and merge in what's missing, never blow it away.
-
-There is no engine and no model-tool footprint: the agent does the work with
-its existing toolset, so this works identically on local, Docker, and remote
-terminal backends. Every surface (CLI ``/init``, gateway ``/init``, TUI
-``/init``) calls :func:`build_init_prompt` and feeds the result to the agent
-as a normal user turn — the same prompt-injection pattern as ``/learn`` and
-``/blueprint``, which preserves prompt-cache invariants (no system-prompt or
-history mutation).
-"""
+"""``/init`` — build the prompt that asks the agent to generate or update a project AGENTS.md."""
 
 from __future__ import annotations
 
@@ -143,15 +119,11 @@ def build_init_prompt(
         A complete instruction the agent runs as a normal turn.
     """
     extra = (extra or "").strip()
-
+    update = existing_file is not None
     parts: list[str] = [
         "[/init] The user wants you to "
-        + (
-            "UPDATE the existing AGENTS.md project-instructions file"
-            if existing_file is not None
-            else "generate an AGENTS.md project-instructions file"
-        )
-        + f" for the project at: {cwd}\n",
+        + ("UPDATE the existing" if update else "generate an")
+        + f" AGENTS.md project-instructions file for the project at: {cwd}\n",
         "AGENTS.md is the instruction file coding agents (Hermes included) "
         "load as project context every session. It should teach an agent how "
         "to work in THIS repo: what the project is, how to set up, the exact "
@@ -166,17 +138,12 @@ def build_init_prompt(
         "don't guess them.\n"
         "2. Write the file to "
         f"{cwd.rstrip('/')}/AGENTS.md with `write_file`"
-        + (
-            " — but this is an UPDATE, so follow the merge discipline below."
-            if existing_file is not None
-            else "."
-        )
+        + (" — but this is an UPDATE, so follow the merge discipline below." if update else ".")
         + "\n"
         "3. Confirm to the user the exact path you wrote and summarize in one "
         "or two lines what the file covers.\n",
     ]
-
-    if existing_file is not None:
+    if update:
         parts.append(
             "MERGE DISCIPLINE — an AGENTS.md already exists (its current "
             "content is below). Do NOT overwrite or regenerate it from "
@@ -191,7 +158,6 @@ def build_init_prompt(
             f"{existing_file}\n"
             "EXISTING_AGENTS_MD\n"
         )
-
     parts.append(_QUALITY_BAR)
 
     if harness_instructions:
@@ -218,7 +184,6 @@ def build_init_prompt(
             "\nUSER NOTES — honor these while authoring (they override the "
             f"defaults above where they conflict):\n{extra}"
         )
-
     return "\n".join(parts)
 
 
