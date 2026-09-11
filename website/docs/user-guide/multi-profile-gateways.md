@@ -212,14 +212,21 @@ keep working.
 
 Per-profile `.env` credential isolation is preserved and, if anything,
 stricter: a profile's keys are resolved from its own scope and are never unioned
-into a shared environment (this also means subprocesses like MCP servers and
-Kanban workers only ever see their own profile's secrets). Terminal settings
+into a shared environment. Subprocesses like MCP servers and Kanban workers only
+ever see their own profile's secrets — including credentials injected by an
+external secret source (1Password, Bitwarden, …): a stdio MCP server started for
+profile B receives B's value for such a name, or nothing if B has none, never the
+default profile's. Terminal settings
 (`terminal.backend`, `terminal.cwd`, `terminal.docker_volumes`,
 `terminal.docker_shared_container_key`, SSH targets, …) are likewise resolved
 per profile on every routed turn: a profile that omits a terminal key gets the
 documented default, never the launch profile's value, and a profile whose
 `config.yaml`/`.env` cannot be parsed has terminal execution refused rather than
-run under another profile's sandbox policy. Kanban,
+run under another profile's sandbox policy. The media-delivery credential
+guard (the denylist behind `MEDIA:` attachments — `.env`, `auth.json`,
+`config.yaml`, `state.db`, session transcripts, OAuth token stores) covers every
+profile under `profiles/`, so no profile's turn can attach another profile's
+secrets or chat history to a reply. Kanban,
 profile-scoped skills/memory/SOUL, and model routing all behave per-profile
 exactly as they do with separate gateways.
 
