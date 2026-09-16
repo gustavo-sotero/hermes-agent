@@ -1026,6 +1026,15 @@ def _notify_multiplexer(canon: str) -> None:
     notify_multiplexer_profiles_changed(canon)
 
 
+def _purge_identity(canon: str) -> bool:
+    """Settle a deleted profile's durable identity (``profile_identity.purge_profile_identity``).
+
+    False means the filesystem delete happened but the identity settlement did not — the caller
+    reports that as a pending settlement rather than a clean success."""
+    from hermes_cli.profile_identity import purge_profile_identity
+    return purge_profile_identity(canon)
+
+
 def _live_default_multiplexer() -> bool:
     """True when a live default gateway has recorded a served-profile set: every dir under
     profiles/ is then served by it, so a profile-identity change must be unrouted first."""
@@ -1283,6 +1292,25 @@ def _print_delete_summary(canon: str, profile_dir: Path, gw_running: bool, wrapp
         print("  ⚠ Gateway is running — it will be stopped.")
 
 
+class ProfileIdentitySettlementPending(RuntimeError):
+    """The profile's directory was deleted, but its durable session/routing identity was not
+    settled (``hermes_cli.profile_identity.purge_profile_identity`` returned False).
+
+    Subclasses ``RuntimeError`` so delete-failure handling that treats the error as fatal (the
+    CLI's ``hermes profile delete``) keeps working unchanged; surfaces that can report a partial
+    success (the dashboard's ``DELETE /api/profiles/{name}``) catch this type — it carries the
+    profile, its now-removed path, and the retry command — instead of matching on the message.
+    """
+
+    def __init__(self, profile: str, path: Path):
+        self.profile = profile
+        self.path = path
+        self.retry_command = f"hermes profile purge-identity {profile}"
+        super().__init__(
+            f"Profile '{profile}' was deleted, but its session/routing identity settlement is "
+            f"still pending — run: {self.retry_command}")
+
+
 def delete_profile(name: str, yes: bool = False) -> Path:
     """Delete a profile, its wrapper script, and its gateway service (service disabled first
     to prevent auto-restart, gateway stopped if running)."""
@@ -1319,8 +1347,11 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     # Tombstone before rmtree so a stale serve/logging mkdir cannot relist this name live.
     mark_named_profile_deleted(profile_dir)
     # The multiplexer sees the tombstone, stops this profile's adapters and releases its handles
-    # into the directory before we remove it.
+    # into the directory before we remove it. Identity settlement is a separate delete-only
+    # operation below: an ordinary unserve must preserve identity, because a rename's old name
+    # leaves the served set exactly like a deleted one does (#111926, delete side).
     _notify_multiplexer(canon)
+    identity_settled = _purge_identity(canon)
 
     # The main serve process survives this deletion. Stop only this profile's MCP
     # transports and release cached stderr handles, including completed probes.
@@ -1362,6 +1393,12 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     if remove_error is not None:
         raise RuntimeError(f"Could not remove profile directory {profile_dir}: {remove_error}") from remove_error
     print(f"\nProfile '{canon}' deleted.")
+    if not identity_settled:
+        # Filesystem work and runtime teardown are done; the durable identity is not. Report the
+        # partial settlement as a typed failure (still a RuntimeError for the CLI's handler)
+        # instead of a clean success; the type carries the path and the retry for surfaces that
+        # can report a partial success.
+        raise ProfileIdentitySettlementPending(canon, profile_dir)
     return profile_dir
 
 
