@@ -1482,6 +1482,19 @@ def _print_gateway_process_mismatch(snapshot: GatewayRuntimeSnapshot) -> None:
         print("  can refuse to start another copy until this process stops.")
 
 
+def _print_multiplex_standalone_reason() -> None:
+    """The boot guard kept an unset-default gateway standalone: say so in status, with the remedy."""
+    try:
+        from gateway.status import read_runtime_status
+        reason = (read_runtime_status() or {}).get("multiplex_standalone_reason")
+    except Exception:
+        return
+    if reason:
+        print(f"⚠ Serving the default profile only (gateway.multiplex_profiles unset): {reason}")
+        print("  Fold every profile onto this gateway: hermes gateway migrate --multiplex")
+        print("  Keep per-profile gateways: hermes config set gateway.multiplex_profiles false")
+
+
 def _print_served_ingress_urls(profile: str | None = None) -> None:
     """Callback URLs of inbound-port platforms the live multiplexer serves for secondary profiles
     (the value to paste into the Twilio / LINE / Teams / BlueBubbles console)."""
@@ -4451,23 +4464,10 @@ def named_profile_served_by_running_multiplexer(profile_name: str | None = None)
         if recorded is not None:
             return normalize_profile_name(suffix) in {normalize_profile_name(p) for p in recorded}
 
-        from gateway.config import _env_multiplex_profiles_override
-        cfg_path = default_root / "config.yaml"
-        cfg = {}
-        if cfg_path.exists():
-            from hermes_cli.config import read_user_config_raw
-            cfg = read_user_config_raw(cfg_path)
-
-        env_multiplex = _env_multiplex_profiles_override()
-        if env_multiplex is False:
-            return False
-        if env_multiplex is not True:
-            if not cfg_path.exists():
-                return False
-            if not (cfg.get("multiplex_profiles") or (cfg.get("gateway", {}) or {}).get("multiplex_profiles")):
-                return False
-
-        return True  # a multiplexing default gateway serves every named profile
+        # No record (older gateway): only an EXPLICIT opt-in counts. The unset default is settled by
+        # the gateway at boot (it may have stayed standalone); a CLI process must not guess it on.
+        from hermes_cli.gateway_multiplex_mode import explicit_multiplex_flag
+        return explicit_multiplex_flag(default_root) is True  # a multiplexer serves every named profile
     except Exception:
         logger.debug("Multiplexer-serving probe failed", exc_info=True)
         return False
@@ -6434,6 +6434,7 @@ def _cmd_status(args):
         else:
             _gw_windows().status(deep=deep)
         _print_gateway_process_mismatch(snapshot)
+        _print_multiplex_standalone_reason()
         _print_served_ingress_urls()
     else:
         pids = list(snapshot.gateway_pids)
@@ -6441,6 +6442,7 @@ def _cmd_status(args):
             print(f"✓ Gateway is running (PID: {', '.join(map(str, pids))})")
             print("  (Running manually, not as a system service)")
             _print_runtime_health()
+            _print_multiplex_standalone_reason()
             _print_served_ingress_urls()
             print()
             _print_lines(*_STATUS_RUNNING_HINTS[_status_host_kind()])
