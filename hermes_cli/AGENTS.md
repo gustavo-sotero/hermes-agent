@@ -153,7 +153,9 @@ profile. The multiplex gateway and the Desktop/dashboard `serve` backend instead
 profile per activity via a contextvar override while `os.environ["HERMES_HOME"]` keeps the launch
 profile — a module constant or import-time read there freezes to the launch profile (rules in
 root). Profiles are independent
-islands by design — no live config inheritance; `--clone` copies at creation, minus messaging
+islands by design — no live config inheritance and no credential inheritance (a named profile reads
+only its own `auth.json`/`.env`; the root store is never a fallback and never a write-through target,
+#111724 — a profile without a provider gets the setup prompt); `--clone` copies at creation, minus messaging
 channels (`profile_channels.py`: ownership-based inventory evaluated in the SOURCE's plugin scope —
 adapter-declared keys + canonical/alias prefixes + `GATEWAY_ALLOW*`/`GATEWAY_RELAY_*`; prefixes shared
 with tools (`HASS_`/`TWILIO_`/`EMAIL_`) are stripped only when the source runs that adapter; never a hand
@@ -162,8 +164,14 @@ and TUI all go through it). Clones are built in `profiles/.<name>.staging-<pid>`
 `_iter_named_profile_dirs` and the hot-serve rescan) and published by one `os.rename` after the strip;
 symlinked `.env`/`config.yaml` are materialized first so a clone never writes through to its source. Multiplex
 (`gateway.multiplex_profiles`) secret-scope rules: `gateway/AGENTS.md`. The served set is
-`profiles.py::profiles_to_serve(multiplex=True)` = default + every live (non-tombstoned) dir under
-`profiles/` — there is no allowlist (`gateway.multiplex_profile_allowlist` was retired in config v43).
+`profiles.py::profiles_to_serve(multiplex=True)` = default + every live dir under `profiles/` — live =
+carries an identity marker (`hermes_constants.named_profile_has_identity`: `config.yaml`/`.env`/`SOUL.md`/
+`profile.yaml`/`auth.json`/`state.db`) and is not tombstoned. A marker-less dir (cron/log side-effect
+shell, stray infrastructure dir) is never listed, served, ticked, `.env`-backfilled or resolvable via `-p`
+(#95188, #99392); `profile create` replaces it only when it is also tombstoned (a live marker-less dir may hold user
+files — fail closed, never rmtree). A dangling symlinked marker still counts as identity (`is_symlink()`).
+`tools/bot_mode_probe._roster` (Bot Mode teammate roster, `bot_relay.deliver` target check) applies the same
+predicate. There is no allowlist (`gateway.multiplex_profile_allowlist` was retired in config v43).
 Enumeration is a pure read: never `mkdir` a profile home from a served path (`SessionDB`, logging,
 cron all go through `mkdir_under_hermes_home` / `_ensure_cron_dir`, which refuse a deleted or
 missing named profile, #94590). Process-global per-profile slots (MCP discovery in `mcp_startup.py`,
